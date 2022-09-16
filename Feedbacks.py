@@ -1,6 +1,7 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
+Feedbacks are estimated as linear ordinary least squares regression coefficients between TOA flux anomalies and T.
+This script calculates feedbacks regressing local TOA flux anomalies against local surface air temperature anomalies 
+and against globally averaged surface air temperature anomalies.
 @author: Alejandro UC
 """
 #
