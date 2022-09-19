@@ -1,35 +1,55 @@
 """
-This script calculates Iorg (Tompkins & Semie, 2017) for a subdomain of the native grid of ICON. 
-Script used for simulation ngc2009
+This script calculates Iorg (Tompkins & Semie, 2017) for subdomains of the native grid of ICON. 
+Script used in the German supercomputer Levante for the NextGEMS hackathon Vienna, 2022.
 @author: Alejandro UC
 """
-#-----------------------------------------------------------------------------
+#
 ## Libraries
-#-----------------------------------------------------------------------------
+#
+import intake
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 from sklearn.cluster import DBSCAN
 import sklearn.neighbors as skl
-import os
-from cdo import *
-cdo = Cdo()
 #-----------------------------------------------------------------------------
 ## Input, output paths and initial values
 #-----------------------------------------------------------------------------
-input='/home/alejandro/scratch/DATA_2_3/'
-output='/home/alejandro/scratch/DATA_2_3/'
-model=dpp0052
 res=10
+model='ngc2009'
+time_0='2020-01-21'
+time_1='2020-01-23'
+#
+output='/work/bb1153/m300648/NextGEMS/outdata/'
+#-----------------------------------------------------------------------------
+## Retrieving and preprocessing initial data
+#-----------------------------------------------------------------------------
+catalog_file="/work/ka1081/Catalogs/dyamond-nextgems.json"
+cat=intake.open_esm_datastore(catalog_file).search(experiment_id='nextgems_cycle2')
+hits=cat.search(variable_id=['rlut','pr'])
+dic=hits.search(simulation_id=[model])
+dataset_dict = dic.to_dataset_dict(cdf_kwargs={"chunks": {"time": 1}})
+for name, da in dataset_dict.items():
+    data=da
+del da
+grid_file_path = "/pool/data/ICON" + data.grid_file_uri.split(".de")[1]
+grid_data = xr.open_dataset(grid_file_path).rename(
+            cell="ncells",  # the dimension has different names in the grid file and in the output.
+        )
+data = xr.merge((data, grid_data))
+md = data.sel(time=slice(time_0,time_1))[["rlut","pr"]]
+#
+data_daily = (md.resample(time="1D", skipna=True).mean())
+del md
 #-----------------------------------------------------------------------------
 ## Reading time
 #-----------------------------------------------------------------------------
-TIME=cdo.selname('rlut', input = input+model+'_pr_rlut.nc',returnXDataset = True).time#.isel(time=slice(1,2))
+TIME=data_daily.time
 #-----------------------------------------------------------------------------
 # Initializing results xarrays.
 #-----------------------------------------------------------------------------
 Iorg=xr.DataArray(data=np.full([len(TIME),6,36], np.nan), dims=["time","lat","lon"],
-                  coords=dict(lon=(["lon"],np.arange(5.,360.,res)),lat=(["lat"], np.arange(-25.,30.,res)),time=TIME,))
+                  coords=dict(lon=(["lon"],np.arange(-175.,180.,res)),lat=(["lat"], np.arange(-25.,30.,res)),time=TIME,))
 Iorg.name = 'Iorg'
 Iorg.attrs['standard_name'] = "Iorg"
 Iorg.attrs['long_name'] = "Iorg"
@@ -61,25 +81,29 @@ pr_mean.attrs['units'] = "kg m-2 d-1"
 ## Looping along subdomains
 #-----------------------------------------------------------------------------
 for latitude in range(-30,30,res):
-    for longitude in range(0,360,res):
+    for longitude in range(-180,180,res):
         print('Starting for '+str(latitude)+'_'+str(longitude))
         #-----------------------------------------------------------------------------
         ## Subsetting large domain
         #-----------------------------------------------------------------------------
-        os.system('cdo -sellonlatbox,'+str(longitude)+','+str(longitude+res)+','+str(latitude)+','+str(latitude+res)+' '+input+model+'_pr_rlut.nc '+input+'tmp_'+model+str(latitude)+'_'+str(longitude)+'.nc')
-        DATA=xr.open_dataset(input+'tmp_'+model+str(latitude)+'_'+str(longitude)+'.nc')
+        mask = (
+            (data.clat.values > np.deg2rad(latitude))
+            & (data.clat.values < np.deg2rad(latitude+res))
+            & (data.clon.values > np.deg2rad(longitude))
+            & (data.clon.values < np.deg2rad(longitude+res))
+        )
         #-----------------------------------------------------------------------------
         ## Looping along time
         #-----------------------------------------------------------------------------
         for tim in range(0,len(TIME)):
-            rlut=DATA.rlut.isel(time=tim)
+            rlut=data_daily.rlut.isel(time=tim)[mask]
             #-----------------------------------------------------------------------------
             ## Retrieving maximum and mean subdomain precipitation values
             #-----------------------------------------------------------------------------
             pr_max.isel(time=tim).loc[dict(lat=(latitude+(latitude+res-latitude)/2), 
-                                                       lon=longitude+(longitude+res-longitude)/2)] = DATA.pr.isel(time=tim).max().values*86400
+                                                       lon=longitude+(longitude+res-longitude)/2)] = data_daily.pr.isel(time=tim)[mask].max().values*86400
             pr_mean.isel(time=tim).loc[dict(lat=(latitude+(latitude+res-latitude)/2), 
-                                                       lon=longitude+(longitude+res-longitude)/2)] = DATA.pr.isel(time=tim).mean().values*86400
+                                                       lon=longitude+(longitude+res-longitude)/2)] = data_daily.pr.isel(time=tim)[mask].mean().values*86400
             #-----------------------------------------------------------------------------
             # Converting center longitude and latitude from radians to degrees
             #-----------------------------------------------------------------------------
@@ -98,27 +122,30 @@ for latitude in range(-30,30,res):
             dX=distances.min()
             #-----------------------------------------------------------------------------
             # Finding convective points using a minimun of 190 Wm-2
-            #-----------------------------------------------------------------------------
-            conv_lon=clon.values[~np.isnan(rlut.where(rlut<190))]
-            conv_lat=clat.values[~np.isnan(rlut.where(rlut<190))]
+            #----------------------------------------------------------------------------- 
+            conv_lon=clon.values[~np.isnan(rlut.where(rlut<=190))]
+            conv_lat=clat.values[~np.isnan(rlut.where(rlut<=190))]
             conv_loc=np.array([[conv_lon[i],conv_lat[i]] for i in range(0, len(conv_lon))])
             #-----------------------------------------------------------------------------
             # If there are not convective points Iorg is undefined
             #-----------------------------------------------------------------------------
-            if len(conv_loc)==0: 
+            if len(conv_loc)==0:
                 print('no conv')
                 Iorg.isel(time=tim).loc[dict(lat=(latitude+(latitude+res-latitude)/2), 
                                              lon=longitude+(longitude+res-longitude)/2)] = np.nan
                 pr_max.isel(time=tim).loc[dict(lat=(latitude+(latitude+res-latitude)/2), 
                                            lon=longitude+(longitude+res-longitude)/2)] = np.nan
+                pr_mean.isel(time=tim).loc[dict(lat=(latitude+(latitude+res-latitude)/2), 
+                                           lon=longitude+(longitude+res-longitude)/2)] = np.nan
                 continue
             #-----------------------------------------------------------------------------
             # If there is just one convective point Iorg is one since the convective organization is maximum
             #-----------------------------------------------------------------------------
-            elif len(conv_loc)==1: 
+            elif len(conv_loc)==1: #<=1: # if there is just one convective point
                 print('one conv')
                 Iorg.isel(time=tim).loc[dict(lat=(latitude+(latitude+res-latitude)/2), 
                                              lon=longitude+(longitude+res-longitude)/2)] = 1 
+
                 continue
             else:
                 #-----------------------------------------------------------------------------
@@ -132,7 +159,7 @@ for latitude in range(-30,30,res):
                 #-----------------------------------------------------------------------------
                 # If there is just one cluster
                 #-----------------------------------------------------------------------------
-                if n_clusters_==1: 
+                if n_clusters_==1:
                     Iorg.isel(time=tim).loc[dict(lat=(latitude+(latitude+res-latitude)/2), 
                     lon=longitude+(longitude+res-longitude)/2)] = 1
                 else:                        
@@ -185,12 +212,11 @@ for latitude in range(-30,30,res):
                     Iorg.isel(time=tim).loc[dict(lat=(latitude+(latitude+res-latitude)/2), 
                             lon=longitude+(longitude+res-longitude)/2)] = np.trapz(cdf,weib)
         print('Done for '+str(latitude)+'_'+str(longitude))
-        os.system('rm '+input+'tmp_'+model+str(latitude)+'_'+str(longitude)+'.nc')
 #-----------------------------------------------------------------------------
 # Saving results in netcdf format
 #-----------------------------------------------------------------------------
 ds = Iorg.to_dataset(name = 'Iorg')
 ds['pr_max'] = pr_max
 ds['pr_mean'] = pr_mean
-ds.to_netcdf(output+'Iorg_'+model+'_NG.nc')
-print('Done for '+model)
+ds.to_netcdf(output+model+'/Iorg_'+model+'_'+time_0+'_'+time_1+'.nc')
+print('Done for '+model+'_'+time_0+'_'+time_1)
