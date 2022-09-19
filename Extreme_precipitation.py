@@ -1,4 +1,3 @@
-
 """
 This script calculates tropical extreme precipitation as the tail of the daily precipitation distribution (99th to 99.99th percentiles)
 and the Clausius-clapeyron scalling (CC, lower tropospheric saturation specific humidity change with temperature).
